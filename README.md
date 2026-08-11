@@ -55,3 +55,63 @@ An ESS-compliant asset contains a standard XMP packet. Below is a complete RDF/X
   </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>
+
+
+## 5. Extraction & Round-Trip Workflows
+CLI Query & Restoration (exiftool)
+Inspect asset metadata format:  
+```bash
+exiftool -ess:Format architecture.png
+# Output: Format : mermaid
+```
+
+Extract and decompress source markup directly back to disk:  
+
+```bash
+exiftool -b -ess:Payload architecture.png | base64 -d | gunzip > architecture.mmd
+```
+
+### Automated Markdown Restoration
+Implementations can parse assets and recreate original code blocks programmatically:  
+```python
+import subprocess, base64, gzip
+
+def extract_ess_to_markdown(image_path):
+    fmt = subprocess.check_output(["exiftool", "-s3", "-ess:Format", image_path]).decode().strip()
+    payload_b64 = subprocess.check_output(["exiftool", "-b", "-ess:Payload", image_path])
+    
+    raw_source = gzip.decompress(base64.b64decode(payload_b64)).decode("utf-8")
+    return f"```{fmt}\n{raw_source}\n```"
+```
+
+## 6. Reference Implementation: Kroki Gateway Integration
+
+To integrate ESS into Kroki without modifying individual rendering container engines, intercept the output stream within the Java/Vert.x Gateway layer.  
+Architecture Interception Point
+Request Entry: io.kroki.server.service.DiagramHandler receives the request and extracts the source payload and diagram type.  
+Asynchronous Closure: Intercept the returned Vert.x Buffer inside diagramService.convert().onSuccess(...) before it reaches DiagramResponse:  
+
+```java
+// Interception pattern inside DiagramHandler.java
+diagramService.convert(source, format, options)
+    .onSuccess(renderedBuffer -> {
+        // Construct the XMP packet using captured GET/POST URL payload
+        String xmp = EssMetadataBuilder.build(diagramType, source, "gzip+base64");
+        
+        // Inject metadata into the byte buffer
+        Buffer finalBuffer = FormatInjector.inject(renderedBuffer, format, xmp);
+        
+        // Return response
+        DiagramResponse.end(response, source, format, finalBuffer, options);
+    });
+```
+
+3. Advantages:
+Zero Container Changes: Requires no edits to Mermaid, PlantUML, or Excalidraw microservices.  
+Zero Re-encoding Overhead: Leverages Kroki's existing GET request gzip+base64 path parameters directly for ess:Payload.  
+
+## 7. Security, Governance & Roadmap
+Security Considerations
+Decompression Limits: Consumers MUST enforce maximum decompressed buffer limits on gzip+base64 streams to mitigate zip bomb risks.  
+Sanitization: Extracted source text is raw markup; rendering applications MUST sanitize payloads prior to execution.  
+
